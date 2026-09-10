@@ -4,7 +4,7 @@ from collections.abc import AsyncIterable
 from typing import Any
 
 from mlflow.gateway.config import EndpointConfig, MistralConfig
-from mlflow.gateway.providers.base import BaseProvider, ProviderAdapter
+from mlflow.gateway.providers.base import BaseProvider, ProviderAdapter, PassthroughAction
 from mlflow.gateway.providers.utils import send_request, send_stream_request
 from mlflow.gateway.schemas import chat as chat_schema
 from mlflow.gateway.schemas import completions as completions_schema
@@ -201,6 +201,11 @@ class MistralProvider(BaseProvider):
     DISPLAY_NAME = "Mistral"
     CONFIG_TYPE = MistralConfig
 
+
+    PASSTHROUGH_PROVIDER_PATHS = {
+        PassthroughAction.MISTRAL_CHAT: "chat/completions",
+    }
+
     def __init__(self, config: EndpointConfig, enable_tracing: bool = False) -> None:
         super().__init__(config, enable_tracing=enable_tracing)
         if config.model.config is None or not isinstance(config.model.config, MistralConfig):
@@ -296,3 +301,33 @@ class MistralProvider(BaseProvider):
             MistralAdapter.embeddings_to_model(payload, self.config),
         )
         return MistralAdapter.model_to_embeddings(resp, self.config)
+
+
+    async def _passthrough(
+        self,
+        action: PassthroughAction,
+        payload: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any] | AsyncIterable[Any]:
+        provider_path = self._validate_passthrough_action(action)
+
+        # Add model name from config
+        payload["model"] = self.config.model.name
+
+        request_headers = self._get_headers(payload, headers)
+
+        if payload.get("stream"):
+            stream = send_stream_request(
+                headers=request_headers,
+                base_url=self.base_url,
+                path=provider_path,
+                payload=payload,
+            )
+            return self._stream_passthrough_with_usage(stream)
+        else:
+            return await send_request(
+                headers=request_headers,
+                base_url=self.base_url,
+                path=provider_path,
+                payload=payload,
+            )
